@@ -1,0 +1,100 @@
+name: PR Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: Target stack
+        type: choice
+        options: [sand, prod]
+        required: true
+      comment_id:
+        description: "The comment-id of the slash command, for the result reaction"
+        required: true
+      sha:
+        description: "PR head SHA, for the chatops commit status"
+        required: true
+
+permissions:
+  pull-requests: write
+  statuses: write
+
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set commit status (pending)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state='pending' \
+            -f context='chatops / deploy / ${{ inputs.stack_name }}' \
+            -f description='Running...'
+
+  release:
+    needs: pending
+    uses: ./.github/workflows/_release.yml
+    with:
+      sha: ${{ inputs.sha }}
+    permissions:
+      contents: write
+      # contents:write is what _release.yml's `gh release create`/`gh
+      # release view` need - a caller's job-level permissions cap what
+      # a called reusable workflow can be granted, regardless of what
+      # that reusable workflow declares for itself.
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      stack_name: ${{ inputs.stack_name }}
+      release_name: ${{ needs.release.outputs.release_name }}
+    secrets: inherit
+
+  react:
+    needs: [release, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build report body
+        env:
+          RELEASE_RESULT: ${{ needs.release.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          STACK_NAME: ${{ inputs.stack_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$RELEASE_RESULT" = "success" ] && [ "$DEPLOY_RESULT" = "success" ]; then
+            result=success
+            emoji="✅"
+          else
+            result=failure
+            emoji="❌"
+          fi
+          echo "result=$result" >> "$GITHUB_ENV"
+          {
+            echo "$emoji [Run]($RUN_URL)"
+            if [ "$STACK_NAME" = "prod" ]; then
+              echo
+              echo "⚠️ Applied this PR's **unmerged** branch directly to prod, not what's on \`main\`."
+            fi
+          } > report-body.md
+
+      - name: React and append the report
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ inputs.comment_id }}
+          reactions: ${{ env.result == 'success' && '+1' || '-1' }}
+          reactions-edit-mode: replace
+          edit-mode: append
+          body-path: report-body.md
+
+      - name: Set commit status (result)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state='${{ env.result == 'success' && 'success' || 'failure' }}' \
+            -f context='chatops / deploy / ${{ inputs.stack_name }}' \
+            -f description='${{ env.result == 'success' && 'Passed' || 'Failed' }}'

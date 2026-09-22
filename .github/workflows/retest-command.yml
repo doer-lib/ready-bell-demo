@@ -1,0 +1,55 @@
+name: PR Retest
+
+on:
+  workflow_dispatch:
+    inputs:
+      comment_id:
+        description: "The comment-id of the slash command, for the result reaction"
+        required: true
+      sha:
+        description: "PR head SHA, for the chatops commit status"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set commit status (pending)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state='pending' \
+            -f context='chatops / retest' \
+            -f description='Running...'
+
+  build:
+    needs: pending
+    uses: ./.github/workflows/_build.yml
+
+  react:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: React with the result
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ inputs.comment_id }}
+          reactions: ${{ needs.build.result == 'success' && '+1' || '-1' }}
+          reactions-edit-mode: replace
+
+      - name: Set commit status (result)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.sha }} \
+            -f state='${{ needs.build.result == 'success' && 'success' || 'failure' }}' \
+            -f context='chatops / retest' \
+            -f description='${{ needs.build.result == 'success' && 'Passed' || 'Failed' }}'

@@ -1,0 +1,28 @@
+name: Build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "git ref to check out — defaults to the triggering ref, which is already correct for workflow_dispatch callers (they run on the ref the dispatch targeted). Only needed if a caller must check out something other than its own triggering ref."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: 25
+          cache: 'maven'
+
+      - name: Build
+        run: mvn -B --color=always verify

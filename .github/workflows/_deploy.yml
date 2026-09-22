@@ -1,0 +1,39 @@
+name: Deploy (reusable)
+
+# Fires repository_dispatch at bin932-home so it rolls out the named
+# release given by release_name onto the given stack. Split out from
+# _release.yml (which only builds and publishes a release) so callers
+# can gate it as its own sequential step, after the release job has
+# actually succeeded - e.g. main.yml's build -> release -> deploy chain.
+on:
+  workflow_call:
+    inputs:
+      stack_name:
+        description: "sand or prod"
+        required: true
+        type: string
+      release_name:
+        description: "the exact release tag to roll out, e.g. build-v1.0-7-gff66e28 (see _release.yml's release_name output) - bin932-home never guesses a 'latest' release, this is always explicit"
+        required: true
+        type: string
+    secrets:
+      PR_COMMANDS_PAT:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask bin932-home to roll it out
+        env:
+          GH_TOKEN: ${{ secrets.PR_COMMANDS_PAT }}
+        run: |
+          gh api repos/SamSoldatenko/bin932-home/dispatches \
+            -f event_type=deploy \
+            -F "client_payload[service]=ready-bell-demo" \
+            -F "client_payload[stack_name]=${{ inputs.stack_name }}" \
+            -F "client_payload[release]=${{ inputs.release_name }}"
+          # Same PAT used by pr-command-dispatch.yml for slash-command-dispatch
+          # - one repo-scoped PAT covers both self-dispatch (workflow_dispatch
+          # on this repo) and the cross-repo repository_dispatch to
+          # bin932-home, as long as it has access to both repos.

@@ -1,0 +1,41 @@
+name: Main
+
+# Every push to main runs build (with tests) -> release -> deploy,
+# strictly in that order: a failing test blocks the release, and a
+# failed release blocks the deploy. Always targets prod (mirrors
+# bin932-home's own main.yml: push to main always deploys prod). For a
+# pre-merge deploy from an open PR, use the `/deploy stack_name=sand|prod`
+# chat-ops command instead (see pr-command-dispatch.yml /
+# deploy-command.yml), which skips tests for a faster turnaround.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: Target stack
+        type: choice
+        options: [sand, prod]
+        default: prod
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+
+  release:
+    needs: build
+    uses: ./.github/workflows/_release.yml
+    permissions:
+      contents: write
+      # contents:write is what _release.yml's `gh release create`/`gh
+      # release view` need - a caller's job-level permissions cap what
+      # a called reusable workflow can be granted, regardless of what
+      # that reusable workflow declares for itself.
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      stack_name: ${{ inputs.stack_name || 'prod' }}
+      release_name: ${{ needs.release.outputs.release_name }}
+    secrets: inherit

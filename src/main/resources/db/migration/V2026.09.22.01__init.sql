@@ -1,0 +1,3 @@
+-- Baseline migration: no schema yet. Add real migrations here as
+-- Vyyyy.MM.dd.NN__description.sql (see aiza-be's db/migration for the
+-- naming convention this project follows).

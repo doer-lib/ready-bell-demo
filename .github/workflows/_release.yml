@@ -1,0 +1,131 @@
+name: Release (reusable)
+
+# Builds Quarkus's default fast-jar, packages it with a run.sh launcher
+# into a tarball, and publishes that as the sole asset of a permanent,
+# named GitHub Release - tagged with the commit's own version
+# (git describe), not an environment. Building a release is deliberately
+# independent of which stack it'll end up on: the same named release can
+# be dispatched to sand and later promoted to prod without rebuilding.
+# Does NOT roll it out - that's _deploy.yml, a separate reusable workflow,
+# so callers can gate the actual rollout as its own step after this one
+# has succeeded (e.g. main.yml's build -> release -> deploy chain). See
+# bin932-home's ansible/roles/web-service for the receiving end of the
+# release contract.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "git ref to check out — defaults to the triggering ref, which is already correct for workflow_dispatch callers (they run on the ref the dispatch targeted). Only needed if a caller must check out something other than its own triggering ref."
+        required: false
+        type: string
+        default: ""
+      sha:
+        description: "commit SHA to pin the GitHub Release to (--target) — defaults to whatever ref resolves to if not given"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      release_name:
+        description: "the tag this run published (or reused), e.g. build-v1.0-7-gff66e28 - pass this to _deploy.yml"
+        value: ${{ jobs.release.outputs.release_name }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # contents:write is what `gh release create`/`gh release view`
+      # need; without an explicit grant here (and in every caller of this
+      # reusable workflow) the GITHUB_TOKEN falls back to the repo's
+      # default permissions and gh release create fails with "HTTP 403:
+      # Resource not accessible by integration".
+    concurrency:
+      group: "release-${{ inputs.sha || github.sha }}"
+      cancel-in-progress: false
+      # Keyed on the commit, not an environment - the version string
+      # itself isn't known until mid-job, so it can't be the group key,
+      # and two concurrent attempts to release the *same* commit are
+      # exactly the case that needs serializing (idempotent publish
+      # below still needs the first attempt to finish creating the
+      # release before a second one checks whether it exists).
+    outputs:
+      release_name: ${{ steps.version.outputs.release_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+          # Full history + tags - git describe below needs to walk back
+          # to the nearest matching tag, which a shallow clone can't do.
+
+      - name: Compute the release version
+        id: version
+        run: |
+          version="$(git describe --tags --match="v[0-9]*.*" --long)"
+          echo "release_name=build-$version" >> "$GITHUB_OUTPUT"
+          # Requires at least one v<major>.<minor> tag reachable from this
+          # commit (e.g. `git tag v1.0 && git push origin v1.0`) - fails
+          # loudly otherwise, which is correct: better than silently
+          # inventing a placeholder version.
+          #
+          # The build- prefix is deliberate: this tag itself must never be
+          # a candidate for a *future* run's `git describe --tags
+          # --match="v[0-9]*.*"` - without it, a tag literally named
+          # e.g. v1.0-7-gff66e28 would itself match that pattern (glob
+          # "." is literal, not regex "any char", but "v1.0-7-..." still
+          # contains a literal "." right after "v1"), so the very next
+          # commit would describe relative to this auto-created tag
+          # instead of the real v1.0 one, compounding nonsense on every
+          # release. "build-..." starts with neither "v" nor a digit, so
+          # it's never a match.
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'temurin'
+          java-version: 25
+          cache: 'maven'
+
+      - name: Build fast-jar
+        run: mvn -B --color=always package -DskipTests
+
+      - name: Assemble the release payload
+        run: |
+          mkdir -p target/release-payload
+          cp -r target/quarkus-app target/release-payload/
+          cat > target/release-payload/run.sh <<'EOF'
+          #!/bin/sh
+          script_dir="$(cd "$(dirname "$0")" && pwd)"
+          exec java -jar "$script_dir/quarkus-app/quarkus-run.jar"
+          EOF
+          chmod +x target/release-payload/run.sh
+          tar -czf target/release.tar.gz -C target/release-payload .
+          # bin932-home extracts this into a releases/<release-name>/
+          # directory and execs run.sh from a permanent, generic
+          # entrypoint - see its ansible/roles/web-service. run.sh
+          # resolves its own absolute path rather than cd-ing there, so
+          # the running process keeps whatever working directory
+          # systemd's WorkingDirectory set, unchanged across every deploy.
+
+      - name: "Publish the ${{ steps.version.outputs.release_name }} release"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ steps.version.outputs.release_name }}
+        run: |
+          if gh release view "$RELEASE_NAME" >/dev/null 2>&1; then
+            echo "release $RELEASE_NAME already exists, reusing it"
+          else
+            gh release create "$RELEASE_NAME" \
+              target/release.tar.gz \
+              --title "$RELEASE_NAME" \
+              --target "${{ inputs.sha || github.sha }}" \
+              --notes "Built by ${{ github.workflow }} (run ${{ github.run_id }})"
+          fi
+          # Permanent tag, never deleted/recreated - unlike the old
+          # moving deploy-test/deploy-prod scheme. Re-running this for a
+          # commit that was already released is a deliberate no-op
+          # (chat-ops may build the same release twice: once for sand,
+          # again later to promote to prod), not an error.
+          # bin932-home's web-service role fetches by this exact tag and
+          # asserts the release has exactly one asset - see its
+          # tasks/bootstrap-or-update.yml.

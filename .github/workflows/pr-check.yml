@@ -1,0 +1,42 @@
+name: PR check
+
+# Build+test for every PR push, plus the available-commands comment.
+# main.yml's own build->release->deploy chain covers push-to-main, so
+# there's no separate always-on ci.yml here - that would just duplicate
+# main.yml's build job on every push to main for no reason.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build.yml
+
+  help-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find existing commands-help comment
+        uses: peter-evans/find-comment@v4
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: <!-- pr-command-help -->
+
+      - name: Post or update the available-commands comment
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- pr-command-help -->
+            ### Available PR commands
+
+            | Command | What it does |
+            | --- | --- |
+            | `/retest` | Re-run the build (`mvn verify`) |
+            | `/deploy stack_name=sand` | Build, publish, and roll out this PR's branch to **sand** (`barracuda.bin932.com`) |
+            | `/deploy stack_name=prod` | Same, to **prod** (`home.bin932.com`) — bypasses the merge-to-main path |
