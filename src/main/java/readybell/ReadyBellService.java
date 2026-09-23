@@ -1,4 +1,4 @@
-package com.bin932.readybelldemo;
+package readybell;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -10,12 +10,10 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 
 import io.quarkus.logging.Log;
-import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
-import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 
 @ApplicationScoped
@@ -36,9 +34,6 @@ public class ReadyBellService {
     public void init() throws Exception {
         socket = new DatagramSocket();
         executor.execute(this::listenLoop);
-    }
-
-    public void onStart(@Observes StartupEvent ev) {
         Log.infof("ReadyBellService bound to port: %s", socket.getLocalPort());
     }
 
@@ -71,7 +66,7 @@ public class ReadyBellService {
             Log.debugf("Sent UDP packet: %s", message);
             return true;
         } catch (IOException e) {
-            Log.warnf("Failed to send UDP packet: %s", message, e);
+            Log.warnf(e, "Failed to send UDP packet: %s", message);
             return false;
         }
     }
@@ -91,10 +86,10 @@ public class ReadyBellService {
                     readyEvent.fire(new ReadyBellEvent(uuid));
                 }
             } catch (SocketException e) {
-                Log.info("UDP socket closed, stopping listener.");
+                Log.infof("UDP socket closed, stopping listener.");
                 break;
             } catch (Exception e) {
-                Log.errorf("UDP reader error: %s", e.getMessage(), e);
+                Log.errorf(e, "UDP reader error: %s", e.getMessage());
             }
         }
     }
