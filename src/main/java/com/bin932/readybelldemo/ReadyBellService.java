@@ -1,11 +1,6 @@
 package com.bin932.readybelldemo;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.event.Event;
-import jakarta.inject.Inject;
-
+import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -13,33 +8,71 @@ import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.Executor;
-import java.util.logging.Logger;
+
+import io.quarkus.logging.Log;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
 
 @ApplicationScoped
 public class ReadyBellService {
 
-    private static final Logger log = Logger.getLogger(ReadyBellService.class.getName());
-    private final InetSocketAddress remoteServer = new InetSocketAddress("ready-bell.com", 3137);
-
-    private DatagramSocket socket;
+    private static final String REMOTE_HOST = "ready-bell.com";
+    private static final int REMOTE_PORT = 3137;
 
     @Inject
     Executor executor;
-
+    
     @Inject
-    Event<ReadyBellRegistered> registeredEvent;
-
-    @Inject
-    Event<ReadyBellReady> readyEvent;
+    Event<ReadyBellEvent> readyEvent;
+    
+    private DatagramSocket socket;
 
     @PostConstruct
-    public void init() {
+    public void init() throws Exception {
+        socket = new DatagramSocket();
+        executor.execute(this::listenLoop);
+    }
+
+    public void onStart(@Observes StartupEvent ev) {
+        Log.infof("ReadyBellService bound to port: %s", socket.getLocalPort());
+    }
+
+    @PreDestroy
+    public void destroy() {
+        if (socket != null && !socket.isClosed()) {
+            socket.close();
+            Log.info("ReadyBellService UDP socket closed.");
+        }
+    }
+
+    public boolean sendListen(UUID uuid, int seconds) {
+        return send("Listen " + uuid + " " + seconds);
+    }
+
+    public boolean sendNotify(UUID uuid) {
+        return send("Notify " + uuid);
+    }
+
+    private boolean send(String message) {
+        InetSocketAddress target = new InetSocketAddress(REMOTE_HOST, REMOTE_PORT);
+        if (target.isUnresolved()) {
+            Log.debugf("Failed to resolve %s, dropping message: %s", REMOTE_HOST, message);
+            return false;
+        }
+
         try {
-            socket = new DatagramSocket();
-            executor.execute(this::listenLoop);
-            log.info(() -> "ReadyBellService bound to port: " + socket.getLocalPort());
-        } catch (SocketException e) {
-            throw new RuntimeException("Failed to initialize UDP socket", e);
+            var bytes = message.getBytes(StandardCharsets.UTF_8);
+            socket.send(new DatagramPacket(bytes, bytes.length, target));
+            Log.debugf("Sent UDP packet: %s", message);
+            return true;
+        } catch (IOException e) {
+            Log.warnf("Failed to send UDP packet: %s", message, e);
+            return false;
         }
     }
 
@@ -50,51 +83,19 @@ public class ReadyBellService {
         while (!socket.isClosed() && !Thread.currentThread().isInterrupted()) {
             try {
                 socket.receive(packet);
-                String message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8).trim();
-                log.info(() -> "Received UDP packet: " + message);
+                var message = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.UTF_8).trim();
+                Log.debugf("Received UDP packet: %s", message);
 
-                if (message.startsWith("Registered ")) {
-                    onRegistered(message.substring("Registered ".length()).trim());
-                } else if (message.startsWith("Ready ")) {
-                    onReady(UUID.fromString(message.substring("Ready ".length()).trim()));
+                if (message.startsWith("Ready ")) {
+                    UUID uuid = UUID.fromString(message.substring("Ready ".length()).trim());
+                    readyEvent.fire(new ReadyBellEvent(uuid));
                 }
             } catch (SocketException e) {
-                log.info("UDP socket closed, stopping listener.");
+                Log.info("UDP socket closed, stopping listener.");
                 break;
             } catch (Exception e) {
-                log.severe("UDP reader error: " + e.getMessage());
+                Log.errorf("UDP reader error: %s", e.getMessage(), e);
             }
-        }
-    }
-
-    private void onRegistered(String rest) {
-        String[] parts = rest.split("\\s+");
-        UUID uuid = UUID.fromString(parts[0]);
-        String ip = parts[1];
-        int port = Integer.parseInt(parts[2]);
-        int ttlSeconds = Integer.parseInt(parts[3]);
-        registeredEvent.fireAsync(new ReadyBellRegistered(uuid, ip, port, ttlSeconds));
-    }
-
-    public void onReady(UUID uuid) {
-        readyEvent.fireAsync(new ReadyBellReady(uuid));
-    }
-
-    public void sendListen(UUID uuid, int seconds) throws Exception {
-        var bytes = ("Listen " + uuid + " " + seconds).getBytes(StandardCharsets.UTF_8);
-        socket.send(new DatagramPacket(bytes, bytes.length, remoteServer));
-    }
-
-    public void sendNotify(UUID uuid) throws Exception {
-        var bytes = ("Notify " + uuid).getBytes(StandardCharsets.UTF_8);
-        socket.send(new DatagramPacket(bytes, bytes.length, remoteServer));
-    }
-
-    @PreDestroy
-    public void destroy() {
-        if (socket != null && !socket.isClosed()) {
-            socket.close();
-            log.info("ReadyBellService UDP socket closed.");
         }
     }
 }

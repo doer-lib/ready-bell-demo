@@ -6,10 +6,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Logger;
 
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.ObservesAsync;
@@ -33,8 +33,6 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 @ApplicationScoped
 @Path("/ready-bell-demo")
 public class ReadyBellDemoResource {
-
-    private static final Logger log = Logger.getLogger(ReadyBellDemoResource.class.getName());
 
     @ConfigProperty(name = "ready-bell-demo.bucket")
     String bucket;
@@ -132,13 +130,7 @@ public class ReadyBellDemoResource {
         }
     }
 
-    void onRegistered(@ObservesAsync ReadyBellRegistered e) {
-        String msg = "UDP RECV 'Registered " + e.uuid() + " " + e.ip() + " " + e.port() + " " + e.ttlSeconds() + "'";
-        DemoInfo updated = sessions.computeIfPresent(e.uuid(), (k, info) -> info.withExtraEvent(msg));
-        apply(e.uuid(), updated, List.of(msg));
-    }
-
-    void onReady(@ObservesAsync ReadyBellReady e) {
+    void onReady(@ObservesAsync ReadyBellEvent e) {
         String msg = "UDP RECV 'Ready " + e.uuid() + "'";
         DemoInfo updated = sessions.computeIfPresent(e.uuid(), (k, info) -> info.withExtraEvent(msg));
         apply(e.uuid(), updated, List.of(msg));
@@ -221,7 +213,7 @@ public class ReadyBellDemoResource {
         try {
             readyBell.sendListen(uuid, 60);
         } catch (Exception e) {
-            log.warning("Failed to send Listen for " + uuid + ": " + e.getMessage());
+            Log.warn("Failed to send Listen for: %s", e.getMessage(), e);
         }
 
         Instant now = Instant.now();
