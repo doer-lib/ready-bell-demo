@@ -19,6 +19,8 @@ public record HelloAsyncJob(
         String outputGreeting,
         String errorMessage) {
 
+    private static final int MAX_DBG_DELAY_SEC = 600;
+
     static HelloAsyncJob fromRequest(UUID id, JsonObject body) {
         if (body == null || !body.containsKey("input")) {
             throw new BadRequestException("input is required");
@@ -29,6 +31,9 @@ public record HelloAsyncJob(
             throw new BadRequestException("input.name is required");
         }
         Integer dbgDelaySec = input.containsKey("dbg-delay-sec") ? input.getInt("dbg-delay-sec") : null;
+        if (dbgDelaySec != null && (dbgDelaySec < 0 || dbgDelaySec > MAX_DBG_DELAY_SEC)) {
+            throw new BadRequestException("input.dbg-delay-sec must be between 0 and " + MAX_DBG_DELAY_SEC);
+        }
         Instant now = Instant.now();
         return new HelloAsyncJob(id, now, now, HelloAsyncStatus.IN_PROGRESS, 0, name, dbgDelaySec, null, null);
     }
@@ -36,6 +41,11 @@ public record HelloAsyncJob(
     HelloAsyncJob withReady(String greeting, Instant now) {
         return new HelloAsyncJob(id, created, now, HelloAsyncStatus.READY, version,
                 inputName, inputDbgDelaySec, greeting, null);
+    }
+
+    HelloAsyncJob withFailed(String errorMessage, Instant now) {
+        return new HelloAsyncJob(id, created, now, HelloAsyncStatus.FAILED, version,
+                inputName, inputDbgDelaySec, null, errorMessage);
     }
 
     Instant dueAt() {

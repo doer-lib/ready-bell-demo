@@ -1,4 +1,4 @@
-package com.bin932.readybelldemo;
+package readybell;
 
 import java.util.UUID;
 
