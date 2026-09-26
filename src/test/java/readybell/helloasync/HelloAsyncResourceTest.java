@@ -53,6 +53,19 @@ class HelloAsyncResourceTest {
     }
 
     @Test
+    void locationUsesForwardedHost() {
+        UUID uuid = UUID.randomUUID();
+        given().contentType("application/json")
+                .header("Forwarded", "host=demo.ready-bell.com;proto=https")
+                .body("""
+                        {"input": {"name": "Bob", "dbg-delay-sec": 1}}
+                        """)
+                .when().post("/hello-async/{uuid}", uuid)
+                .then().statusCode(201)
+                .header("Location", equalTo("https://demo.ready-bell.com/hello-async/" + uuid));
+    }
+
+    @Test
     void badUuidReturnsNotFound() {
         given().when().get("/hello-async/{uuid}", "not-a-uuid")
                 .then().statusCode(404);
