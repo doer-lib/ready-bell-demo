@@ -11,9 +11,8 @@ The protocol has three plain-text UDP messages:
 | `Notify <uuid>`     | whoever finishes     | "Work on `<uuid>` is done"                       |
 | `Ready <uuid>`      | ready-bell.com       | Sent to every listener of `<uuid>` after a `Notify` |
 
-With these messages a client can wait for a job without polling in a loop. It polls once
-when `Ready` arrives, plus an occasional fallback poll in case a UDP packet is lost.
-
+With these messages, a client can wait for a job without continuously polling. It polls
+once when Ready arrives, with an occasional fallback poll in case a UDP packet is lost.
 This is a Quarkus application, deployed on `home.bin932.com` on HTTPS port 3160. The
 examples below use:
 
@@ -23,7 +22,43 @@ BASE=https://home.bin932.com:3160
 
 ---
 
+## Project overview
+
+A Java / Quarkus (Maven) backend with two independent examples that share one ready-bell
+client.
+
+```
+src/main/java/readybell/
+├── ReadyBellService.java    UDP client for ready-bell.com
+├── ReadyBellEvent.java      CDI event fired when "Ready <uuid>" arrives
+├── helloasync/              Example 1: fires Notify when its own job finishes
+└── hellocloud/              Example 2: sends Listen, receives Ready from a Lambda's Notify
+```
+
+---
+
+## ReadyBellService
+
+`ReadyBellService` is an `@ApplicationScoped` bean that owns a single UDP socket:
+
+- `sendListen(uuid, seconds)` sends `Listen <uuid> <seconds>`.
+- `sendNotify(uuid)` sends `Notify <uuid>`.
+- A background loop reads incoming packets. Each `Ready <uuid>` is turned into a
+  `ReadyBellEvent`, which any bean can receive with `@Observes ReadyBellEvent`.
+
+UDP is fire-and-forget, so both send methods only return `false` when the packet could not
+be sent. Callers must still work if a packet is lost.
+
+---
+
 ## Example 1: hello-async (backend **fires** a notification)
+
+This example only **sends** notifications.
+
+Jobs are stored in the `hello_async_job` table.
+The "slow work" is a sleep in a virtual thread.
+When it ends, the job row is updated to `READY` (or `FAILED`) with
+optimistic locking, and then `sendNotify(uuid)` is called.
 
 `POST /hello-async/{uuid}` starts a slow job. When the job finishes, the backend sends
 `Notify <uuid>` to ready-bell.com, and anyone listening on that uuid is woken up.
@@ -72,16 +107,24 @@ While the job is running it returns `IN_PROGRESS`. Once it is finished:
 
 ### What happens in terminal 1
 
-`nc` waits without printing anything. About 10 seconds after the POST, the backend
-finishes the job and sends `Notify <uuid>`. ready-bell.com passes it on, and terminal 1
-prints:
+```bash
+➜  ~ uuid=$(uuidgen | tr A-Z a-z)                             
+➜  ~ echo $uuid
+3a23054b-0d53-466c-bea7-9d4d2da4d193
+➜  ~ echo "Listen $uuid 120" | nc -u -w 120 ready-bell.com 3137              
+Registered 3a23054b-0d53-466c-bea7-9d4d2da4d193 <ip> <port> 120
+Ready 3a23054b-0d53-466c-bea7-9d4d2da4d193
+➜  ~
+```
 
-```
-Ready 3f0c…-your-uuid
-```
+ready-bell.com confirms the `Listen` immediately with a `Registered <uuid> <ip> <port> <s>`
+line, showing the address it will send to and for how long. Then `nc` waits. About 10
+seconds after the POST, the backend finishes the job and sends `Notify <uuid>`.
+ready-bell.com passes it on, and terminal 1 prints `Ready <uuid>`.
 
 That line tells a real client to make one final `GET`, which returns `READY` with the
-greeting. If no `Ready` arrives within 120 seconds, `nc` exits without printing anything.
+greeting. If no `Ready` arrives within 120 seconds, `nc` exits after printing only the
+`Registered` line.
 
 ---
 
@@ -90,6 +133,10 @@ greeting. If no `Ready` arrives within 120 seconds, `nc` exits without printing 
 In this example the backend is the one that waits. The work runs in AWS and signals
 completion through ready-bell.com.
 
+The backend calls `sendListen(uuid, 60)` for each pending job and observes
+`ReadyBellEvent`, so a `Ready` makes it check S3 right away instead of waiting for the
+10-second poll.
+
 ### Setup
 
 - S3 bucket `ready-bell-demo` (region `eu-central-1`). Each job gets a folder `<uuid>/`.
@@ -97,14 +144,8 @@ completion through ready-bell.com.
   writes `<uuid>/output.txt`, and sends `Notify <uuid>` to `ready-bell.com:3137`.
 - The backend never calls the Lambda. It only talks to S3 and ready-bell.com.
 
-```
-client ──POST /hello-cloud/{uuid}──▶ backend ── presigned PUT/GET URLs ──▶ client
-client ──PUT input.txt (presigned)──▶ S3 ──trigger──▶ Lambda
-Lambda ──write output.txt──▶ S3
-Lambda ──Notify <uuid>──▶ ready-bell.com ──Ready <uuid>──▶ backend
-backend ──HEAD output.txt──▶ S3  →  status READY  ──SSE──▶ client
-client ──GET output.txt (presigned)──▶ S3
-```
+![hello-cloud-sequence.svg](hello-cloud-sequence.svg)
+
 
 ### What the backend does
 
