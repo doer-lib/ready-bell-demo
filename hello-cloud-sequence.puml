@@ -1,0 +1,39 @@
+@startuml hello-cloud example
+
+participant client as C
+participant backend as BE
+participant "AWS Lambda Fn" as F
+participant "AWS S3" as S3
+participant "<b>ready-bell.com:3137</b>" as RB
+
+C -> BE : POST /hello-cloud/{uuid}
+BE --> C : 201 Created\n{"uuid", "status": "NEW",\n "inputPutUrl", "outputGetUrl", ...}
+C -> BE : GET /hello-cloud/{uuid}/sse
+BE --> C : <<SSE>> status NEW
+
+group every 10s until READY, or FAILED after 2 min
+    BE -[#red]-> RB : <font color=red><b><<UDP>> Listen {uuid} 60</b></font>
+    BE -> S3 : HEAD {uuid}/input.txt
+    BE -> S3 : HEAD {uuid}/output.txt
+end
+
+C -> S3 : PUT {uuid}/input.txt (inputPutUrl)
+S3 --> F : trigger: input.txt created
+activate F
+
+BE -> S3 : HEAD {uuid}/input.txt → 200
+BE --> C : <<SSE>> status IN_PROGRESS
+
+F -> S3 : GET {uuid}/input.txt
+F -> S3 : PUT {uuid}/output.txt
+F -[#red]-> RB : <font color=red><b><<UDP>> Notify {uuid}</b></font>
+deactivate F
+
+RB -[#red]-> BE : <font color=red><b><<UDP>> Ready {uuid}</b></font>
+note over BE : check now,\ndon't wait for the next poll
+BE -> S3 : HEAD {uuid}/output.txt → 200
+BE --> C : <<SSE>> status READY, end
+
+C -> S3 : GET {uuid}/output.txt (outputGetUrl)
+
+@enduml
