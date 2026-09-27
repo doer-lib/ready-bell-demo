@@ -205,3 +205,29 @@ event: end        data: end of stream
 
 The `ready` event is the ready-bell notification from the Lambda. It makes the backend
 check S3 right away instead of waiting for the next 10-second poll.
+
+---
+
+## /udp-ws: `nc -u ready-bell.com 3137` in the browser
+
+`/udp-ws` is a websocket that works like `nc -u ready-bell.com 3137`. Each websocket gets its
+own UDP socket: it is opened with the websocket and closed with it. A page can open several
+websockets and each one has its own UDP port.
+
+| Direction        | Message                                  | Meaning                                  |
+|------------------|------------------------------------------|------------------------------------------|
+| browser → server | `{"type":"send","data":"Listen <uuid> 60"}` | Send `data` as one UDP packet (max 512 bytes; no `data` sends an empty packet) |
+| browser → server | `{"type":"close"}`                        | Close the UDP socket and the websocket   |
+| server → browser | `{"type":"recv","data":"Ready <uuid>"}`   | A UDP packet was received                |
+| server → browser | `{"type":"error","data":"..."}`           | The last command was rejected            |
+
+The server sends a websocket ping frame every minute. Browsers answer it automatically; if
+the previous ping got no pong, the server closes the connection with code `4000`. At most
+100 websockets can be open at once; more are closed with code `1013`.
+
+```js
+const uuid = crypto.randomUUID();
+const ws = new WebSocket("wss://home.bin932.com:3160/udp-ws");
+ws.onmessage = e => console.log(JSON.parse(e.data));
+ws.onopen = () => ws.send(JSON.stringify({type: "send", data: `Listen ${uuid} 60`}));
+```
