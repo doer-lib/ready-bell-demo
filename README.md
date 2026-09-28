@@ -7,9 +7,9 @@ The protocol has three plain-text UDP messages:
 
 | Message             | Sent by              | Meaning                                         |
 |---------------------|----------------------|-------------------------------------------------|
-| `Listen <uuid> <s>` | whoever waits        | "Wake me up about `<uuid>` within `<s>` seconds" |
+| `Listen <uuid> <s>` | whoever waits        | "Wake me up about `<uuid>` on every `Notify` for the next `<s>` seconds" |
 | `Notify <uuid>`     | whoever finishes     | "Work on `<uuid>` is done"                       |
-| `Ready <uuid>`      | ready-bell.com       | Sent to every listener of `<uuid>` after a `Notify` |
+| `Ready <uuid>`      | ready-bell.com       | Sent to every active listener of `<uuid>` after each `Notify` |
 
 With these messages, a client can wait for a job without continuously polling. It polls
 once when Ready arrives, with an occasional fallback poll in case a UDP packet is lost.
